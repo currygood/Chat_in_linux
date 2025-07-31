@@ -1,4 +1,4 @@
-﻿#include<stdio.h>
+#include<stdio.h>
 #include<stdlib.h>
 #include<string.h>
 #include<unistd.h>
@@ -24,10 +24,18 @@ int sockfd;//套接字fd
 void sig_handler(int signo) {
     if (signo == SIGINT) {
         printf("\nClient exiting...\n");
+        struct message end;
+        strcpy(end.chat_information,"I break...");
+        struct iovec iov;
+        iov.iov_base=&end;
+        iov.iov_len=sizeof(end);
+        writev(sockfd,&iov,1);
         close(sockfd);
         exit(0);
     }
 }
+
+void Main_control(char *buffer);
 
 int main(int argc, char *argv[]) {
     if (argc != 3) {
@@ -71,7 +79,13 @@ int main(int argc, char *argv[]) {
         close(sockfd);
         exit(1);
     }
+    //连接成功后进行一些处理然后开始一对一聊天
+    Main_control(buffer);
+    return 0;
+}
 
+void Main_control(char *buffer)
+{
     // 检查是否为错误消息
     if (strstr(buffer, "ERROR:") != NULL) 
     {//根据连接上去的这个客户端的ip判断是不是member,服务端还会判断有没有达到最大连接数
@@ -104,14 +118,17 @@ int main(int argc, char *argv[]) {
             exit(1);
         }
         recv(sockfd,buffer,sizeof(buffer),0);
-        printf("%s\n", buffer);
+        if(strcmp(buffer,"You can't use 'everyone' as your name.")==0)//用错名字
+        {
+            printf("%s\n", buffer);
+            close(sockfd);
+            exit(0);
+        } 
     }
     else
     {
         printf("%s\n", buffer);
     }
-
-    
 
     // 获取聊天对象
     char receiver[USER_NAME_MAX];
@@ -125,9 +142,11 @@ int main(int argc, char *argv[]) {
         perror("fork");
         close(sockfd);
         exit(1);
-    } else if (pid == 0) { // 子进程：接收消息
+    } 
+    else if (pid == 0) { // 子进程：接收消息
         while (1) {
             struct message msg;
+            memset(&msg,0,sizeof msg);
             struct iovec iov;
             iov.iov_base = &msg;
             iov.iov_len = sizeof(msg);
@@ -143,13 +162,16 @@ int main(int argc, char *argv[]) {
             printf("What do you want to send: ");
             fflush(stdout); // 确保提示信息显示
         }
-    } else { // 父进程：发送消息
+    } 
+    else { // 父进程：发送消息
         struct message msg;
+        memset(&msg,0,sizeof msg);
         strcpy(msg.receive_name, receiver);
 
         while (1) {
             printf("What do you want to send: ");
             char message[INF_MAX];
+            memset(message,0,sizeof message);
             if (fgets(message, sizeof(message), stdin) == NULL) {
                 continue;
             }
@@ -173,9 +195,9 @@ int main(int argc, char *argv[]) {
 
         // 清理资源
         close(sockfd);
+        kill(pid, SIGTERM); // 终止子进程,一定要先kill，不然输入quit退出来后，先执行下面的话会一直等待子进程，但是子进程的while是一直没有退出的
         waitpid(pid, NULL, 0);
-        kill(pid, SIGTERM); // 终止子进程
         printf("Client exited\n");
-        return 0;
+        return;
     }
 }
