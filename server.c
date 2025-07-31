@@ -1,4 +1,4 @@
-﻿#include<stdio.h>
+#include<stdio.h>
 #include<stdlib.h>
 #include<string.h>
 #include<unistd.h>
@@ -9,6 +9,9 @@
 #include<signal.h>
 #include<stdbool.h>
 #include<sys/uio.h>
+
+//_b是好的代码，后面加入群聊天
+//服务端和客户端都写到了：群发判断，通过receive_name来搞，特定一个名字
 
 #define MAX_CLIENT 1000//最大的客户端连接数
 #define BUFFER_SIZE 1024//最大的缓冲区大小
@@ -31,6 +34,8 @@ int server_fd, client_fd;//服务端fd和while中当前新的客户端fd
 int client_fds[MAX_CLIENT] = {0};//临时存储当时链接的用户的fd
 struct users us[MAX_CLIENT];//临时存储当时链接的用户
 int now_users_num = 0;//当前链接的用户数量
+struct sockaddr_in server_addr, client_addr;//服务端和客户端属性
+socklen_t addr_len = sizeof(client_addr);
 
 void sig_handler(int signo) {
     if (signo == SIGINT) {
@@ -44,6 +49,10 @@ void sig_handler(int signo) {
     }
 }
 
+void Main_control();
+void Do_one_talk(int fd,struct message *msg,struct iovec *iov);//一对一聊天
+void Do_together_talk(int fd,int max_fd,struct message *msg,struct iovec *iov);//群聊天，这个服务器就是群管理，直接发给所有人
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         printf("Usage: %s <port>\n", argv[0]);
@@ -56,8 +65,7 @@ int main(int argc, char *argv[]) {
     }
 
     int port = atoi(argv[1]);
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len = sizeof(client_addr);
+    
 
     // 创建并配置服务器 socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
@@ -90,6 +98,14 @@ int main(int argc, char *argv[]) {
 
     printf("Server listening on port %d...\n", port);
 
+    Main_control();
+
+    close(server_fd);
+    return 0;
+}
+
+void Main_control()
+{
     fd_set read_fds, temp_fds;
     int max_fd = server_fd;
 
@@ -111,12 +127,12 @@ int main(int argc, char *argv[]) {
                     if(now_users_num>=MAX_CLIENT)
                     {
                         char full_msg[]="ERROR:Server full,try late...";
-                        client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
+                        client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
                         send(client_fd, full_msg, strlen(full_msg), 0);
                         close(client_fd);
                         continue;
                     }
-                    if ((client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len)) == -1) {
+                    if ((client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len)) == -1) {
                         perror("accept");
                         continue;
                     }
@@ -163,7 +179,8 @@ int main(int argc, char *argv[]) {
                         char welcome_msg[] = "Welcome! You can start chatting.";
                         send(client_fd, welcome_msg, strlen(welcome_msg) + 1, 0);
                         printf("User %s connected\n", us[now_users_num - 1].usersname[1]);
-                    } else {
+                    } 
+                    else {
                         // 用户不存在，发送错误码并关闭连接
                         //或者说让用户创建，先等待用户传来的信息再判断要不要创建
                         char error_msg[] = "ERROR: Not registered user";
@@ -186,6 +203,14 @@ int main(int argc, char *argv[]) {
                                 continue;
                             }
                             new_name[strcspn(new_name, "\n")] = '\0';
+                            char can_not_name[BUFFER_SIZE]="You can't use 'everyone' as your name.";
+                            if(strcmp(new_name,"everyone")==0)
+                            {
+                                send(fd,can_not_name,sizeof(can_not_name),0);
+                                close(client_fd);
+                                printf("Connection from %s rejected (not registered)\n", client_ip);
+                                continue;
+                            }
                             FILE *new_fp;
                             if((new_fp=fopen("users.txt","a+"))==NULL)
                             {
@@ -213,7 +238,7 @@ int main(int argc, char *argv[]) {
                             us[now_users_num].connected=1;
                             now_users_num++;
                             char welcome_msg[] = "Welcome! You can start chatting.";
-                            send(client_fd, welcome_msg, strlen(welcome_msg) + 1, 0);
+                            send(client_fd, welcome_msg, strlen(welcome_msg) + 1, 0);                        
                             printf("User %s connected\n", us[now_users_num - 1].usersname[1]);
                         }
                         else
@@ -230,7 +255,7 @@ int main(int argc, char *argv[]) {
                     iov.iov_len = sizeof(msg);
 
                     ssize_t bytes_received = readv(fd, &iov, 1);
-                    if (bytes_received <= 0) { // 客户端断开连接
+                    if (bytes_received <= 0 || strcmp(msg.chat_information,"I break...")==0) { // 客户端断开连接
                         printf("Client disconnected (fd=%d)\n", fd);
                         close(fd);
                         FD_CLR(fd, &read_fds);
@@ -254,44 +279,68 @@ int main(int argc, char *argv[]) {
                                 break;
                             }
                         }
-
-                        //如果这个fd是最大的，那么还要把最大的--
-                        if (fd == max_fd) { 
-                            max_fd--;
-                            while (max_fd >= 0 && client_fds[max_fd] == 0) max_fd--;
-                        }
                     } 
                     else { // 转发消息
                         // 查找接收方
-                        bool receiver_found = false;
-                        int receiver_fd = -1;
-                        for (int i = 0; i < now_users_num; i++) {
-                            if (strcmp(us[i].usersname[1], msg.receive_name) == 0 && us[i].connected) {
-                                receiver_found = true;
-                                receiver_fd = us[i].fd;
-                                break;
-                            }
+                        //判断是不是群发
+                        if(strcmp(msg.receive_name,"everyone")==0)
+                        {
+                            Do_together_talk(fd,max_fd,&msg,&iov);
                         }
-
-                        if (receiver_found) {
-                            // 填充发送方信息
-                            for (int i = 0; i < now_users_num; i++) {
-                                if (us[i].fd == fd) {
-                                    strcpy(msg.send_name, us[i].usersname[1]);
-                                    break;
-                                }
-                            }
-                            writev(receiver_fd, &iov, 1);
-                        } else {
-                            char error_msg[] = "ERROR: Receiver not found or offline";
-                            send(fd, error_msg, strlen(error_msg) + 1, 0);
+                        else
+                        {
+                            Do_one_talk(fd,&msg,&iov);
                         }
+                        
                     }
                 }
             }
         }
     }
+}
 
-    close(server_fd);
-    return 0;
+void Do_one_talk(int fd,struct message *msg,struct iovec *iov)
+{
+    // 填充发送方信息
+    for (int i = 0; i < now_users_num; i++) {
+        if (us[i].fd == fd) {
+            strcpy(msg->send_name, us[i].usersname[1]);
+            break;
+        }
+    }
+    bool receiver_found = false;
+    int receiver_fd = -1;
+    for (int i = 0; i < now_users_num; i++) {
+        if (strcmp(us[i].usersname[1], msg->receive_name) == 0 && us[i].connected) {
+            receiver_found = true;
+            receiver_fd = us[i].fd;
+            break;
+        }
+    }
+
+    if (receiver_found) {
+        writev(receiver_fd, iov, 1);
+    } else {
+        char error_msg[] = "ERROR: Receiver not found or offline";
+        send(fd, error_msg, strlen(error_msg) + 1, 0);
+    }
+}
+
+void Do_together_talk(int fd,int max_fd,struct message *msg,struct iovec *iov)
+{
+    for (int i = 0; i < now_users_num; i++) 
+    {
+        if (us[i].fd == fd) 
+        {
+            strcpy(msg->send_name, us[i].usersname[1]);
+            break;
+        }
+    }
+    for(int i=0;i<now_users_num;++i)
+    {
+        if(us[i].fd!=fd)//不是自己就发
+        {
+            writev(us[i].fd, iov, 1);
+        }
+    }
 }
