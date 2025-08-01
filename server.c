@@ -91,7 +91,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    if (listen(server_fd, 5) == -1) {
+    if (listen(server_fd, USER_NAME_MAX) == -1) {
         perror("listen");
         exit(1);
     }
